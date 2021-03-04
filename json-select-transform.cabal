@@ -14,8 +14,7 @@ build-type:          Simple
 
 library
   exposed-modules:
-    Data.JSON
-    Data.JSON.Select
+    Data.JSON.SelectTransform
   -- other-modules:
   -- other-extensions:
   build-depends:

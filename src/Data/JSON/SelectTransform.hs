@@ -1,10 +1,21 @@
+{-|
+Description : matching/selection and transformation of JSON values.
+-}
 {-# language OverloadedStrings #-}
-module Data.JSON.Select where
+module Data.JSON.SelectTransform (
+  -- * The two functions
+  select, transform
+  -- ** Errors
+, STError(..), SelectErrorReason(..), TransformErrorReason(..)
+, Path, PathElement(..)
+  -- * Types involved
+  -- **
+, Template, Variable, Assignment
+) where
 
 import           Data.Aeson
 import qualified Data.HashMap.Strict as M
 import qualified Data.HashSet        as S
-import           Data.JSON
 import           Data.List           (foldl')
 import           Data.List.NonEmpty  (NonEmpty)
 import qualified Data.List.NonEmpty  as NE
@@ -24,8 +35,17 @@ type Variable = Text
 -- | Results from selecting from a template.
 type Assignment = M.HashMap Variable Value
 
-data SelectError
-  = SelectError SelectErrorReason Path
+-- | A position within a document.
+type Path = [PathElement]
+
+-- | Each of the steps making up a 'Path'.
+data PathElement
+  = PathElementKey Text
+  | PathElementIndex Int
+  deriving (Eq, Show)
+
+data STError reason
+  = STError reason Path
   deriving (Eq, Show)
 
 data SelectErrorReason
@@ -34,14 +54,18 @@ data SelectErrorReason
   | DuplicateVariable Variable
   deriving (Eq, Show)
 
+newtype TransformErrorReason
+  = MissingVariable Variable
+  deriving (Eq, Show)
+
 select
   :: Template -> Value
-  -> Validation (NonEmpty SelectError) Assignment
+  -> Validation (NonEmpty (STError SelectErrorReason)) Assignment
 select = go []
   where
     -- the path is accumulated *in reverse*
     go :: Path -> Template -> Value
-       -> Validation (NonEmpty SelectError) Assignment
+       -> Validation (NonEmpty (STError SelectErrorReason)) Assignment
     go _ template value
       | Just var <- isVariable template
       = pure $ M.singleton var value
@@ -75,7 +99,7 @@ select = go []
 
     unionWithNoDuplicates
       :: Path -> Assignment -> Assignment
-      -> Validation (NonEmpty SelectError) Assignment
+      -> Validation (NonEmpty (STError SelectErrorReason)) Assignment
     unionWithNoDuplicates rpath a1 a2
       = let k1 = M.keysSet a1
             k2 = M.keysSet a2
@@ -89,24 +113,13 @@ select = go []
        => Validation a Assignment
     ok = pure M.empty
 
-    wrong
-      :: Path -> SelectErrorReason
-      -> Validation (NonEmpty SelectError) Assignment
-    wrong rpath reason
-      = failure $ SelectError reason (reverse rpath)
-
-    wrongs
-      :: Path -> NonEmpty SelectErrorReason
-      -> Validation (NonEmpty SelectError) Assignment
-    wrongs rpath reasons
-      = Failure $ fmap (\reason -> SelectError reason (reverse rpath)) reasons
-
-    (>>-)
-      :: Validation e x
-      -> (x -> Validation e y)
-      -> Validation e y
-    Validation.Success x >>- f = f x
-    Validation.Failure e >>- _ = Validation.Failure e
+transform
+  :: Assignment -> Template -> Value
+transform assigns = go
+  where
+    go template
+      | Just var <- isVariable template
+      = undefined
 
 isVariable
   :: Value -> Maybe Text
@@ -116,3 +129,24 @@ isVariable (String name)
   = Just $ T.drop 2 (T.dropEnd 2 name)
   | otherwise
   = Nothing
+
+-- Additional primitives for Validation
+
+wrong
+  :: Path -> reason
+  -> Validation (NonEmpty (STError reason)) Assignment
+wrong rpath reason
+  = failure $ STError reason (reverse rpath)
+
+wrongs
+  :: Path -> NonEmpty reason
+  -> Validation (NonEmpty (STError reason)) Assignment
+wrongs rpath reasons
+  = Failure $ fmap (\reason -> STError reason (reverse rpath)) reasons
+
+(>>-)
+  :: Validation e x
+  -> (x -> Validation e y)
+  -> Validation e y
+Validation.Success x >>- f = f x
+Validation.Failure e >>- _ = Validation.Failure e
