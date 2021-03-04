@@ -6,11 +6,11 @@ Inspired by [ST.js](https://selecttransform.github.io/site/).
 ### `select`
 - template: `{ "number" : "{{x}}" }`
 - document: `{ "number" : 1 }`
-- result: `{ a -> 1 }`
+- result: `{ x -> 1 }`
 
 ### `transform`
 - template: `{ "number" : "{{x}}" }`
-- assignment: `{ a -> 1 }`
+- assignment: `{ x -> 1 }`
 - result: `{ "number" : 1 }`
 
 ### `transform` with array
