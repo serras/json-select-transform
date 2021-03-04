@@ -150,36 +150,40 @@ select = go []
 transform
   :: Assignment -> Template
   -> Validation (NonEmpty (STError TransformErrorReason)) Value
-transform assigns = go []
+transform = go []
   where
-    go :: Path -> Template
+    go :: Path -> Assignment -> Template
        -> Validation (NonEmpty (STError TransformErrorReason)) Value
-    go rpath template
+    go rpath assigns template
       | Just var <- isVariable template
       = case M.lookup var assigns of
           Nothing -> wrong rpath (MissingVariable var)
           Just x  -> pure x
-    go rpath (String s)
-      = pure $ String (replaceAll s)
-    go rpath (Object o)
+    go rpath assigns (String s)
+      = pure $ String (replaceAll s assigns)
+    go rpath assigns (Object o)
       | Just (var, inner) <- isEach o
       = case M.lookup var assigns of
-          Nothing         -> wrong rpath (MissingVariable var)
-          Just x@Array {} -> go rpath x
-          Just _          -> wrong rpath (NotAnArray var)
+          Nothing -> wrong rpath (MissingVariable var)
+          Just (Array vs) ->
+            let do_one i v  -- update assignment
+                      = go (PathElementIndex i : rpath)
+                           (M.insert var v assigns) inner
+                new_a = V.imap do_one vs
+            in Array <$> sequenceA new_a
+          Just _ -> wrong rpath (NotAnArray var)
       | otherwise
-      = let new_o = M.mapWithKey (\k -> go (PathElementKey k : rpath)) o
+      = let new_o = M.mapWithKey (\k -> go (PathElementKey k : rpath) assigns) o
         in Object <$> sequenceA new_o
-    go rpath (Array a)
-      = let new_a = V.imap (\i -> go (PathElementIndex i : rpath)) a
+    go rpath assigns (Array a)
+      = let new_a = V.imap (\i -> go (PathElementIndex i : rpath) assigns) a
         in Array <$> sequenceA new_a
-    go _ primitive  -- numbers, booleans, null
+    go _ _ primitive  -- numbers, booleans, null
       = pure primitive
 
-    replaceAll s
+    replaceAll
       = M.foldlWithKey'
            (\acc k v -> T.replace ("{{" <> k <> "}}") (stringify v) acc)
-           s assigns
 
 -- | Checks whether a 'Value' represents a 'Variable'.
 isVariable
