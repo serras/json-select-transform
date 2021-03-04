@@ -1,7 +1,7 @@
 cabal-version:       >=1.10
 name:                json-select-transform
 version:             0.1.0.0
--- synopsis:
+synopsis:            Matching/selection and transformation of JSON values
 -- description:
 -- bug-reports:
 license:             BSD3

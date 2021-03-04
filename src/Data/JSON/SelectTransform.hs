@@ -1,19 +1,34 @@
-{-|
-Description : matching/selection and transformation of JSON values.
--}
 {-# language OverloadedStrings #-}
+{-# language TupleSections     #-}
+{-# language ViewPatterns      #-}
+{-|
+Description : Matching/selection and transformation of JSON values
+
+'Template's are JSON documents in which some of the elements
+are replaced by 'Variable's of the form @{{name}}@. You can then:
+- 'select' the value of those variables matching
+  against a JSON document.
+- 'transform' a template to a new document by injecting the values.
+  In this case you can also use @{{#each name}}@ as the single key
+  on an object to iterate through all the values in an array.
+
+Inspired by https://selecttransform.github.io/site/.
+-}
 module Data.JSON.SelectTransform (
   -- * The two functions
   select, transform
-  -- ** Errors
+  -- * Errors
+, Validation(..)
 , STError(..), SelectErrorReason(..), TransformErrorReason(..)
 , Path, PathElement(..)
   -- * Types involved
-  -- **
 , Template, Variable, Assignment
+  -- * Simple wrappers for quick testing
+, simpleSelect, simpleTransform, simpleTransform'
 ) where
 
 import           Data.Aeson
+import           Data.Aeson.Text
 import qualified Data.HashMap.Strict as M
 import qualified Data.HashSet        as S
 import           Data.List           (foldl')
@@ -21,6 +36,8 @@ import           Data.List.NonEmpty  (NonEmpty)
 import qualified Data.List.NonEmpty  as NE
 import           Data.Text           (Text)
 import qualified Data.Text           as T
+import           Data.Text.Encoding
+import qualified Data.Text.Lazy      as LazyText
 import qualified Data.Vector         as V
 import           Validation
 
@@ -44,20 +61,35 @@ data PathElement
   | PathElementIndex Int
   deriving (Eq, Show)
 
+-- | Error in a JSON value, along with its position in the document.
 data STError reason
   = STError reason Path
+  -- ^ Regular error during 'select' or 'transform'.
+  | DecodeError
+  -- ^ Error while decoding in the simple variants.
   deriving (Eq, Show)
 
+-- | Errors during 'select'.
 data SelectErrorReason
   = MissingKey Text
+  -- ^ A key in the template is not present in the value.
   | NonMatch Template Value
+  -- ^ The value does not match the template
+  --   (for example, you expected @2@ and the value has @"hello"@).
   | DuplicateVariable Variable
+  -- ^ A variable appears more than once in the template.
   deriving (Eq, Show)
 
-newtype TransformErrorReason
+-- | Errors during 'transform'.
+data TransformErrorReason
   = MissingVariable Variable
+  -- ^ A variable is missing from the 'Assignment'.
+  | NotAnArray Variable
+  -- ^ A value used in @#each@ is not an 'Array'.
   deriving (Eq, Show)
 
+-- | Matches a JSON document against a template,
+--   returning the assignment to the variables.
 select
   :: Template -> Value
   -> Validation (NonEmpty (STError SelectErrorReason)) Assignment
@@ -113,37 +145,112 @@ select = go []
        => Validation a Assignment
     ok = pure M.empty
 
+-- | Transform a template JSON document by injecting
+--   the values of some variables.
 transform
-  :: Assignment -> Template -> Value
-transform assigns = go
+  :: Assignment -> Template
+  -> Validation (NonEmpty (STError TransformErrorReason)) Value
+transform assigns = go []
   where
-    go template
+    go :: Path -> Template
+       -> Validation (NonEmpty (STError TransformErrorReason)) Value
+    go rpath template
       | Just var <- isVariable template
-      = undefined
+      = case M.lookup var assigns of
+          Nothing -> wrong rpath (MissingVariable var)
+          Just x  -> pure x
+    go rpath (String s)
+      = pure $ String (replaceAll s)
+    go rpath (Object o)
+      | Just (var, inner) <- isEach o
+      = case M.lookup var assigns of
+          Nothing         -> wrong rpath (MissingVariable var)
+          Just x@Array {} -> go rpath x
+          Just _          -> wrong rpath (NotAnArray var)
+      | otherwise
+      = let new_o = M.mapWithKey (\k -> go (PathElementKey k : rpath)) o
+        in Object <$> sequenceA new_o
+    go rpath (Array a)
+      = let new_a = V.imap (\i -> go (PathElementIndex i : rpath)) a
+        in Array <$> sequenceA new_a
+    go _ primitive  -- numbers, booleans, null
+      = pure primitive
 
+    replaceAll s
+      = M.foldlWithKey'
+           (\acc k v -> T.replace ("{{" <> k <> "}}") (stringify v) acc)
+           s assigns
+
+-- | Checks whether a 'Value' represents a 'Variable'.
 isVariable
   :: Value -> Maybe Text
 isVariable (String name)
   | "{{" `T.isPrefixOf` name
   , "}}" `T.isSuffixOf` name
   = Just $ T.drop 2 (T.dropEnd 2 name)
-  | otherwise
+isVariable other
   = Nothing
+
+-- | Checks whether an 'Object' represent iteration.
+isEach
+  :: Object
+  -> Maybe (Variable, Value)
+isEach (M.toList -> [(k, v)])
+  | "{{#each " `T.isPrefixOf` k
+  , "}}" `T.isSuffixOf` k
+  = Just (T.drop 8 (T.dropEnd 2 k), v)
+isEach other
+  = Nothing
+
+-- | Simple wrapper to test 'select'.
+simpleSelect
+  :: Text -> Text
+  -> Validation (NonEmpty (STError SelectErrorReason)) Assignment
+simpleSelect template value
+  = case (decodeFromText template, decodeFromText value) of
+      (Just template', Just value') -> select template' value'
+      _                             -> failure DecodeError
+
+-- | Simple wrapper to test 'select'.
+simpleTransform
+  :: [(Text,Text)] -> Text
+  -> Validation (NonEmpty (STError TransformErrorReason)) Value
+simpleTransform assigns template
+  = case (mapM (\(k, v) -> (k,) <$> decodeFromText v) assigns, decodeFromText template) of
+      (Just assigns', Just template') -> transform (M.fromList assigns') template'
+      _                               -> failure DecodeError
+
+-- | Simple wrapper to test 'select'.
+simpleTransform'
+  :: [(Text,Text)] -> Text
+  -> Validation (NonEmpty (STError TransformErrorReason)) Text
+simpleTransform' assigns template
+  = stringify <$> simpleTransform assigns template
+
+-- Manipulation of 'Text'
+
+decodeFromText
+  :: Text -> Maybe Value
+decodeFromText = decodeStrict . encodeUtf8
+
+stringify (String s) = s
+stringify other      = LazyText.toStrict $ encodeToLazyText other
 
 -- Additional primitives for Validation
 
 wrong
   :: Path -> reason
-  -> Validation (NonEmpty (STError reason)) Assignment
+  -> Validation (NonEmpty (STError reason)) x
 wrong rpath reason
   = failure $ STError reason (reverse rpath)
 
 wrongs
   :: Path -> NonEmpty reason
-  -> Validation (NonEmpty (STError reason)) Assignment
+  -> Validation (NonEmpty (STError reason)) x
 wrongs rpath reasons
   = Failure $ fmap (\reason -> STError reason (reverse rpath)) reasons
 
+-- | The missing '(>>=)' for 'Validation'.
 (>>-)
   :: Validation e x
   -> (x -> Validation e y)
