@@ -13,6 +13,11 @@ Inspired by [ST.js](https://selecttransform.github.io/site/).
 - assignment: `{ x -> 1 }`
 - result: `{ "number" : 1 }`
 
+### `transform` with interpolation
+- template: `{ "message" : "the result is {{x}}" }`
+- assignment: `{ x -> 1 }`
+- result: `{ "message" : "the result is 1" }`
+
 ### `transform` with array
 - template: `{ "{{#each n}}" : { "number" : "{{n}}" } }`
 - assignment: `{ n -> [1, 2] }`
